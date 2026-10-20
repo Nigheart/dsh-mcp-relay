@@ -51,6 +51,20 @@ text is a recurring cost rather than a one-off. Since 0.6.1 the surface is sized
 - `dsh_delegate` blocks by default, so one delegated turn costs one model request, and polling is left to
   callers that genuinely have other work to do in parallel.
 
+Waiting has a purpose rule, not just an interval rule: these tools exist to deliver a result, not progress
+updates. Let `dsh_delegate` block unless you have independent work that can start now; finish that work,
+then collect the result with `dsh_poll` and a long `timeoutMs`. A `timeout` ends the wait — it is not a
+failure, and "still running" is not a reason to keep querying and narrating progress.
+
+One limit sits outside this plugin: an MCP client may cap a single tool call (Codex exposes
+`tool_timeout_sec`). A cap shorter than the relay's own wait turns one blocking delegation into repeated
+round trips, and no prompt can undo that — give it at least `DSH_RELAY_TIMEOUT_MS`. For Codex:
+
+```toml
+[mcp_servers.dsh]
+tool_timeout_sec = 600
+```
+
 The effect is measurable rather than asserted:
 
 ```bash
@@ -86,7 +100,7 @@ Verify it independently:
 
 ```bash
 curl -s http://127.0.0.1:3080/dsh-relay/ping
-# {"ok":true,"data":{"relay":"dsh-mcp-relay","version":"0.6.2","tokenRequired":false}}
+# {"ok":true,"data":{"relay":"dsh-mcp-relay","version":"0.6.3","tokenRequired":false}}
 ```
 
 If your instance listens on a port other than 3080, use that port here and set `DSH_RELAY_URL` for the MCP

@@ -48,6 +48,20 @@ MCP 客户端在每一次模型请求里都会重发握手说明和全部工具 
 - 工具结果以紧凑 JSON 返回，不再做两空格缩进；
 - `dsh_delegate` 默认阻塞，因此一次委派只花一次模型请求；轮询只留给确实要并行做别的事的调用方。
 
+等待要有「目的」规则，不只是「间隔」规则：这些工具是为了交结果，不是为了报进度。除非你手上有可以立刻
+开展、且不依赖该结果的独立工作，否则让 `dsh_delegate` 阻塞；先把独立工作做完，再用 `dsh_poll` 配一个
+长 `timeoutMs` 收结果。`timeout` 只是这次等待结束，不是失败；「仍在运行」也不是继续查询、转述进度的
+理由。
+
+有一个限制在插件之外：MCP 客户端可能给单次工具调用设上限（Codex 对应 `tool_timeout_sec`）。上限比中继
+自己的等待还短，就会把一次阻塞委派变成反复往返，这靠提示词救不回来——至少设到与 `DSH_RELAY_TIMEOUT_MS`
+相当。Codex 的写法：
+
+```toml
+[mcp_servers.dsh]
+tool_timeout_sec = 600
+```
+
 效果是可量的，不是嘴上说的：
 
 ```bash
@@ -82,7 +96,7 @@ dsh plugin --profile web add github:Nigheart/dsh-mcp-relay
 
 ```bash
 curl -s http://127.0.0.1:3080/dsh-relay/ping
-# {"ok":true,"data":{"relay":"dsh-mcp-relay","version":"0.6.2","tokenRequired":false}}
+# {"ok":true,"data":{"relay":"dsh-mcp-relay","version":"0.6.3","tokenRequired":false}}
 ```
 
 如果你的实例监听的不是 3080，请把这里和下面的 `DSH_RELAY_URL` 一起改成实际端口。

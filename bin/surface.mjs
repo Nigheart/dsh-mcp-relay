@@ -14,11 +14,17 @@ export const LEAN_INSTRUCTIONS = `DSH Agent Control — delegate work to DSH age
 
 Use these tools only when the user asks or agrees. A new session needs an absolute workspace path; if none was given, ask — do not assume your own.
 
-dsh_delegate({ workspace, instruction }) starts a session (or continues one via sessionId). By default it BLOCKS until that turn ends and returns the final output — that is the normal path: one round trip, no polling.
-- Reuse sessionId for the SAME line of work; start a new session for a different task, or once its context has grown long.
-- Set wait:false only when you have other work to do in parallel. Then do NOT short-poll: call dsh_poll({ sessionId, baselineSeq }) with a long timeoutMs, never a one-second loop.
+Purpose, not interval: these tools exist to deliver a result, not progress updates.
+- Default to blocking. Call dsh_delegate and let it wait — that is the normal path: one round trip, no polling.
+- Set wait:false ONLY when you have work you can start now that does not depend on the result. Finish that work first, then collect the result with dsh_poll and a long timeoutMs. Never query in a loop to watch progress, and never turn "still running" or unchanged output into a progress report.
+- A timeout ends this wait; it does not mean the task failed. After a connection error, one recovery check is fine, then keep waiting for the result. If the same error keeps repeating, report it as blocked and stop retrying unchanged.
+- dsh_poll collects a result, answers a waiting state, or recovers from an error. It is not a way to do or watch work; query progress only when the user asks.
+- Never send a second dsh_delegate for a task that is already running.
 
-status: completed = output is the answer. timeout = still running; dsh_poll({ sessionId, baselineSeq }). waiting = blocked on a human, and waiting.kind says which:
+dsh_delegate({ workspace, instruction }) starts a session (or continues one via sessionId).
+- Reuse sessionId for the SAME line of work; start a new session for a different task, or once its context has grown long.
+
+status: completed = output is the answer. timeout = this wait ended, still running; dsh_poll({ sessionId, baselineSeq }). waiting = blocked on a human, and waiting.kind says which:
 - "user-question" with intercepted:true -> answer it with dsh_answer({ sessionId, answers }) using the ids in waiting.detail. intercepted:false -> the question sits in the DSH GUI; only a person there can answer it (it falls back there after about three minutes).
 - "approval" -> already pending: only a person in the DSH GUI can approve it, or dsh_cancel abandons the turn. dsh_approval({ sessionId, mode }) changes FUTURE approvals only: "deny" fails them at once, "gui" leaves them to the GUI, "auto-approve" depends on the deployment. A tool call that is merely still running is NOT a wait — the session stays "running" with a pendingTool field.
 
@@ -58,8 +64,9 @@ export function leanTools({ timeoutMs = 600000 } = {}) {
     {
       name: 'dsh_delegate',
       description:
-        'Delegate a task to DSH and, by default, wait for that turn to end; continue via sessionId. ' +
-        'status: completed (output is the answer) | waiting (blocked on a human) | timeout (still running).',
+        'Delegate a task to DSH and, by default, block until that turn ends; continue via sessionId. ' +
+        'Set wait:false only for work you can run in parallel. status: completed (output is the ' +
+        'answer) | waiting (blocked on a human) | timeout (this wait ended, still running).',
       inputSchema: {
         type: 'object',
         properties: {
@@ -87,7 +94,9 @@ export function leanTools({ timeoutMs = 600000 } = {}) {
           },
           wait: {
             type: 'boolean',
-            description: 'true (default): block until the turn ends; false: return accepted at once.',
+            description:
+              'true (default): block until the turn ends; false: return accepted at once — use ' +
+              'only for work you can run in parallel.',
           },
           timeoutMs: {
             type: 'number',
@@ -131,8 +140,9 @@ export function leanTools({ timeoutMs = 600000 } = {}) {
     {
       name: 'dsh_poll',
       description:
-        'Read a session, optionally blocking until it settles. Use it after a timeout or a waiting ' +
-        'result; pass a long timeoutMs rather than polling in a short loop.',
+        'Collect a result, answer a waiting state, or recover from an error — not a progress tool. ' +
+        'Do not query repeatedly while nothing needs you; query only when the user asks. Prefer ' +
+        'one long timeoutMs over a short loop.',
       inputSchema: {
         type: 'object',
         properties: {
