@@ -33,8 +33,30 @@ MCP 客户端（stdio）
 - **`bin/dsh-mcp-relay.mjs`** 是独立的 MCP server，对你的 agent 讲 stdio、对插件讲 HTTP。它之所以存在，是因为
   DSH 进程自己占用了 stdout，插件无法直接提供 stdio 服务。
 
-等待与轮询都发生在 MCP server 内部，那里不产生任何模型开销；你的模型只花一次工具调用，然后拿到完成的
-结果。
+等待与轮询都发生在 MCP server 内部，那里不产生任何模型开销；`dsh_delegate` 默认阻塞，你的模型每委派一轮
+只花**一次**工具调用，然后拿到完成的结果。
+
+工具面是刻意做小的：握手说明与每个工具 schema 会随每一次模型请求重发，所以它们不是一次性成本，而是每轮
+都在付的持续成本。保持默认的 `wait: true` 让它阻塞——异步委派再配短轮询，每 poll 一次就是一次完整请求。
+
+## Codex 调用方的开销
+
+MCP 客户端在每一次模型请求里都会重发握手说明和全部工具 schema，所以这部分文本是每轮都在付的持续成本，
+不是一次性开销。0.6.1 起工具面按这个前提裁剪：
+
+- 握手说明约 2.1k 字符（原先约 4.3k），七个工具的 schema 约 4.2k 字符（原先约 5.9k）；
+- 工具结果以紧凑 JSON 返回，不再做两空格缩进；
+- `dsh_delegate` 默认阻塞，因此一次委派只花一次模型请求；轮询只留给确实要并行做别的事的调用方。
+
+效果是可量的，不是嘴上说的：
+
+```bash
+node bin/dsh-bench.mjs surface        # 两个面的体积与逐工具拆分
+node bin/dsh-bench.mjs usage <目录>   # 把一次 Codex 会话的请求归因到 dsh 工具调用
+```
+
+`DSH_RELAY_SURFACE=full` 提供旧的大面，同一个任务可以两边各跑一次做对照。单次请求省下的量相对于长对话
+的历史很小——它的意义在于每次请求都要付，而不是只付一次。
 
 ## 环境要求
 
@@ -60,7 +82,7 @@ dsh plugin --profile web add github:Nigheart/dsh-mcp-relay
 
 ```bash
 curl -s http://127.0.0.1:3080/dsh-relay/ping
-# {"ok":true,"data":{"relay":"dsh-mcp-relay","version":"0.6.0","tokenRequired":false}}
+# {"ok":true,"data":{"relay":"dsh-mcp-relay","version":"0.6.1","tokenRequired":false}}
 ```
 
 如果你的实例监听的不是 3080，请把这里和下面的 `DSH_RELAY_URL` 一起改成实际端口。
@@ -106,6 +128,7 @@ server 会在 MCP 握手时（`initialize.instructions`）下发自己的用法�
 | `DSH_RELAY_TOKEN` | *未设置* | 作为 `x-dsh-relay-token` 发送，需与插件侧一致。 |
 | `DSH_RELAY_TIMEOUT_MS` | `600000` | 单次委派轮次的默认等待上限。 |
 | `DSH_RELAY_POLL_MS` | `2000` | 进度轮询间隔。 |
+| `DSH_RELAY_SURFACE` | `lean` | 工具面版本。`full` 为冻结的 0.6.0 面，仅供 A/B 测量。 |
 
 ## 工具
 
@@ -124,6 +147,9 @@ server 会在 MCP 握手时（`initialize.instructions`）下发自己的用法�
 ```
 dsh_delegate({ workspace: "/home/me/project", instruction: "给 parser.js 补上缺失的测试" })
 ```
+
+默认情况下这次调用会**阻塞**到该轮结束——这是推荐路径：一次请求进，一个结果出。只在确实要并行干活时才传
+`wait: false`，之后用 `dsh_poll` 加一个足够长的 `timeoutMs` 收结果，绝不要 1 秒级空转。
 
 省略 `sessionId` 会新建一个 DSH agent；把返回值里的 `sessionId` 传回来，就是继续**同一个** agent，它还记
 得之前做过的事。`status` 告诉你发生了什么：
@@ -245,6 +271,10 @@ dsh_answer({ sessionId, answers: [{ id: "choice", selected: ["sqlite"] }] })
 ```bash
 npm test
 ```
+
+工具面本身可测：`node bin/dsh-bench.mjs surface` 打印两个版本的说明与 schema 体积；
+`node bin/dsh-bench.mjs usage <session.jsonl>` 把一次 Codex 会话的模型请求归因到其中的 dsh 工具调用。
+用 `DSH_RELAY_SURFACE=full` 可以让同一个任务跑在冻结的旧面上做对照。
 
 ## 许可证
 

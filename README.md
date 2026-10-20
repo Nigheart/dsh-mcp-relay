@@ -34,8 +34,33 @@ Two halves, and the split matters:
 - **`bin/dsh-mcp-relay.mjs`** is a standalone MCP server that speaks stdio to your agent and HTTP to the plugin.
   It exists because DSH's own process owns stdout, so the plugin cannot serve stdio itself.
 
-Waiting and polling happen in the MCP server, where they cost nothing; your model spends one tool call and
-receives the finished result.
+Waiting and polling happen in the MCP server, where they cost nothing, and `dsh_delegate` blocks by default:
+your model spends **one** tool call per delegated turn and receives the finished result.
+
+The tool surface is deliberately small. The handshake instructions and every tool schema are re-sent with
+each model request, so each of them is a recurring cost rather than a one-off. Keep the default `wait: true`
+and let it block — an async delegation that then gets short-polled costs one full request per poll.
+
+## What a Codex caller pays
+
+An MCP client re-sends the handshake instructions and every tool schema with each model request, so that
+text is a recurring cost rather than a one-off. Since 0.6.1 the surface is sized for that:
+
+- the instructions are ~2.1k characters instead of ~4.3k, and the seven tool schemas ~4.2k instead of ~5.9k;
+- tool results are returned as compact JSON instead of 2-space-indented text;
+- `dsh_delegate` blocks by default, so one delegated turn costs one model request, and polling is left to
+  callers that genuinely have other work to do in parallel.
+
+The effect is measurable rather than asserted:
+
+```bash
+node bin/dsh-bench.mjs surface        # both sizes, plus the per-tool breakdown
+node bin/dsh-bench.mjs usage <dir>    # attribute a Codex session's requests to dsh tool calls
+```
+
+`DSH_RELAY_SURFACE=full` serves the older, larger surface, so the same task can be run against both and
+compared. The saving per request is small next to a long conversation's history; what matters is that it is
+paid on *every* request rather than once.
 
 ## Requirements
 
@@ -61,7 +86,7 @@ Verify it independently:
 
 ```bash
 curl -s http://127.0.0.1:3080/dsh-relay/ping
-# {"ok":true,"data":{"relay":"dsh-mcp-relay","version":"0.6.0","tokenRequired":false}}
+# {"ok":true,"data":{"relay":"dsh-mcp-relay","version":"0.6.1","tokenRequired":false}}
 ```
 
 If your instance listens on a port other than 3080, use that port here and set `DSH_RELAY_URL` for the MCP
@@ -108,6 +133,7 @@ Environment variables:
 | `DSH_RELAY_TOKEN` | *(unset)* | Sent as `x-dsh-relay-token`; must match the plugin's value. |
 | `DSH_RELAY_TIMEOUT_MS` | `600000` | Default wait for one delegated turn. |
 | `DSH_RELAY_POLL_MS` | `2000` | Progress poll interval. |
+| `DSH_RELAY_SURFACE` | `lean` | Tool surface to serve. `full` serves the frozen 0.6.0 surface, for A/B measurement only. |
 
 ## Tools
 
@@ -126,6 +152,10 @@ Environment variables:
 ```
 dsh_delegate({ workspace: "/home/me/project", instruction: "Add the missing tests for parser.js" })
 ```
+
+By default the call **blocks** until the turn ends — that is the intended path: one request in, one result
+out. Pass `wait: false` only when you have other work to do in parallel; then collect the result with
+`dsh_poll` and a long `timeoutMs`, never a one-second loop.
 
 Omit `sessionId` to start a new DSH agent; pass the returned `sessionId` back to continue the **same** agent,
 which still remembers the earlier work. `status` tells you what happened:
@@ -265,6 +295,11 @@ a restart:
 ```bash
 npm test
 ```
+
+The tool surface is measurable. `node bin/dsh-bench.mjs surface` prints both variants' instruction and
+schema sizes; `node bin/dsh-bench.mjs usage <session.jsonl>` attributes a Codex session's model requests to
+the dsh tool calls inside it. Serve the frozen surface with `DSH_RELAY_SURFACE=full` to run the same task
+against both.
 
 ## License
 

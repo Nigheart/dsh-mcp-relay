@@ -17,10 +17,20 @@
 
 import { createInterface } from 'node:readline'
 
+import { buildSurface } from './surface.mjs'
+
 const RELAY = process.env.DSH_RELAY_URL || 'http://127.0.0.1:3080/dsh-relay'
 const RELAY_TOKEN = process.env.DSH_RELAY_TOKEN || ''
 const DEFAULT_TIMEOUT_MS = Number(process.env.DSH_RELAY_TIMEOUT_MS || 600000)
 const POLL_INTERVAL_MS = Number(process.env.DSH_RELAY_POLL_MS || 2000)
+
+// Everything the client pays for on every request: the handshake instructions
+// and the tool schemas. DSH_RELAY_SURFACE=full serves the frozen 0.6.0 surface
+// for A/B measurement; anything else gets the lean one.
+const SURFACE = buildSurface({
+  variant: process.env.DSH_RELAY_SURFACE || 'lean',
+  timeoutMs: DEFAULT_TIMEOUT_MS,
+})
 
 const log = (...parts) => process.stderr.write(`[dsh-mcp-relay] ${parts.join(' ')}\n`)
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -132,208 +142,16 @@ function textBlock(text) {
   return { content: [{ type: 'text', text }] }
 }
 
-const TOOLS = [
-  {
-    name: 'dsh_list_sessions',
-    description:
-      'List sessions of the running DSH instance, optionally filtered to one workspace. ' +
-      'Use this to discover an existing sessionId to continue, or to check what DSH is doing.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        workspace: {
-          type: 'string',
-          description: 'Absolute workspace path to filter by (exact match). Omit to list all sessions.',
-        },
-      },
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'dsh_models',
-    description:
-      'List the models this DSH instance can route right now, grouped by provider, with each model\'s ' +
-      'reasoning efforts. Use the ids here as dsh_delegate\'s model / provider / reasoningEffort. ' +
-      'Also reports the instance default used by sessions nobody has configured.',
-    inputSchema: {
-      type: 'object',
-      properties: {},
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'dsh_delegate',
-    description:
-      'Delegate a task to a DSH agent, like handing work to a subagent. Creates a new session in the ' +
-      'given workspace (or continues an existing one when sessionId is supplied), sends the instruction, ' +
-      'and by default blocks until that turn finishes and returns its final output. ' +
-      'Pass the returned sessionId back in later calls to keep working with the same DSH agent. ' +
-      'If DSH blocks on a human question it returns status "waiting" immediately rather than hanging. ' +
-      'Pass model to run this delegation on a model you choose (call dsh_models first for the ids).',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        instruction: { type: 'string', description: 'The task instruction for the DSH agent.' },
-        workspace: {
-          type: 'string',
-          description: 'Absolute workspace path; used as cwd when creating a new session.',
-        },
-        sessionId: {
-          type: 'string',
-          description: 'Continue this existing DSH session instead of creating a new one.',
-        },
-        mode: {
-          type: 'string',
-          enum: ['queue', 'steer'],
-          description:
-            'queue (default) appends after the current turn; steer injects into the running turn.',
-        },
-        agentPreset: {
-          type: 'string',
-          description: 'Optional agent preset id for a newly created session.',
-        },
-        model: {
-          type: 'string',
-          description:
-            'Model id to run this turn on, e.g. "deepseek-v4.1-flash". Accepts "provider/model" too. ' +
-            'Omit to leave the session (or the instance default) alone. Get ids from dsh_models. ' +
-            'The choice also becomes this instance\'s saved default, exactly as the DSH model picker does.',
-        },
-        provider: {
-          type: 'string',
-          description:
-            'Provider route for model (e.g. "deepseek"). Optional: it is inferred when the model id is ' +
-            'unambiguous, or from "provider/model".',
-        },
-        reasoningEffort: {
-          type: 'string',
-          description:
-            'Optional reasoning effort id for the chosen model, such as "high". Only ids dsh_models lists ' +
-            'for that model are valid; omit to take the model\'s default.',
-        },
-        takeover: {
-          type: 'boolean',
-          description:
-            'Default true. Routes this session\'s ask_user_question calls to you instead of the DSH GUI, ' +
-            'so you answer them with dsh_answer. If you never answer, the question falls back to the GUI ' +
-            'after about 3 minutes.',
-        },
-        wait: {
-          type: 'boolean',
-          description: 'Block until the turn completes (default true). Set false to return immediately.',
-        },
-        timeoutMs: {
-          type: 'number',
-          description: `Maximum time to wait for completion (default ${DEFAULT_TIMEOUT_MS}).`,
-        },
-      },
-      required: ['instruction'],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'dsh_answer',
-    description:
-      'Answer a question that DSH asked while takeover was on, letting its agent continue. ' +
-      'Use the sessionId and the question ids from the "waiting" block returned by dsh_delegate or dsh_poll.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        sessionId: { type: 'string', description: 'The DSH session that is waiting.' },
-        answers: {
-          type: 'array',
-          description: 'One entry per question, keyed by the question id.',
-          items: {
-            type: 'object',
-            properties: {
-              id: { type: 'string', description: 'Question id from waiting.detail.' },
-              selected: {
-                type: 'array',
-                items: { type: 'string' },
-                description: 'Selected option labels.',
-              },
-              custom: { type: 'string', description: 'Free-text answer instead of a listed option.' },
-            },
-            required: ['id'],
-            additionalProperties: false,
-          },
-        },
-      },
-      required: ['sessionId', 'answers'],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'dsh_poll',
-    description:
-      'Check a DSH session: whether it is running, waiting on a human, or idle, plus its latest ' +
-      'assistant output. Use after a dsh_delegate that timed out or returned "waiting", or to follow ' +
-      'long-running work.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        sessionId: { type: 'string', description: 'The DSH session to inspect.' },
-        baselineSeq: {
-          type: 'number',
-          description: 'Only report completion once the log passes this cursor (from dsh_delegate).',
-        },
-        timeoutMs: {
-          type: 'number',
-          description: 'If greater than zero, block until settled, blocked-on-human, or this timeout elapses.',
-        },
-      },
-      required: ['sessionId'],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'dsh_approval',
-    description:
-      'Decide how a DSH session resolves approval requests — operations DSH refuses to run without a decision. ' +
-      '"gui" (the default) leaves them to the DSH Web GUI for a person to answer. ' +
-      '"auto-approve" grants them automatically for that session. ' +
-      '"deny" makes them fail immediately, so an unattended delegation stops instead of blocking forever.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        sessionId: { type: 'string', description: 'The DSH session to configure.' },
-        mode: {
-          type: 'string',
-          enum: ['gui', 'auto-approve', 'deny'],
-          description: 'How approval requests for this session should be resolved.',
-        },
-      },
-      required: ['sessionId', 'mode'],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'dsh_cancel',
-    description:
-      'Cancel the active turn of a DSH session. Use it to abandon a turn that is blocked on an approval nobody ' +
-      'can answer, or one that is running too long. Only the running turn stops; messages already queued inside ' +
-      'DSH keep going.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        sessionId: { type: 'string', description: 'The DSH session whose active turn should stop.' },
-      },
-      required: ['sessionId'],
-      additionalProperties: false,
-    },
-  },
-]
-
 async function callTool(name, args) {
   if (name === 'dsh_list_sessions') {
     const query = args.workspace ? `?cwd=${encodeURIComponent(args.workspace)}` : ''
     const data = await callRelay(`/list${query}`)
-    return textBlock(JSON.stringify(data, null, 2))
+    return textBlock(JSON.stringify(data))
   }
 
   if (name === 'dsh_models') {
     const data = await callRelay('/models')
-    return textBlock(JSON.stringify(data, null, 2))
+    return textBlock(JSON.stringify(data))
   }
 
   if (name === 'dsh_delegate') {
@@ -365,10 +183,7 @@ async function callTool(name, args) {
             ...(accepted.model ? { model: accepted.model, modelNote: accepted.modelNote } : {}),
             baselineSeq,
             note: 'Not waiting. Call dsh_poll with this sessionId and baselineSeq to collect the result.',
-          },
-          null,
-          2,
-        ),
+          }),
       )
     }
 
@@ -398,10 +213,7 @@ async function callTool(name, args) {
             outcome === 'timeout'
               ? 'Still running. Call dsh_poll again with the same sessionId.'
               : undefined,
-        },
-        null,
-        2,
-      ),
+        }),
     )
   }
 
@@ -416,10 +228,7 @@ async function callTool(name, args) {
           sessionId: result.sessionId,
           delivered: result.delivered,
           note: 'The agent is resuming. Call dsh_poll with a baselineSeq to collect its output.',
-        },
-        null,
-        2,
-      ),
+        }),
     )
   }
 
@@ -428,7 +237,7 @@ async function callTool(name, args) {
       method: 'POST',
       body: { sessionId: args.sessionId, mode: args.mode },
     })
-    return textBlock(JSON.stringify(result, null, 2))
+    return textBlock(JSON.stringify(result))
   }
 
   if (name === 'dsh_cancel') {
@@ -436,7 +245,7 @@ async function callTool(name, args) {
       method: 'POST',
       body: { sessionId: args.sessionId },
     })
-    return textBlock(JSON.stringify(result, null, 2))
+    return textBlock(JSON.stringify(result))
   }
 
   if (name === 'dsh_poll') {
@@ -461,10 +270,7 @@ async function callTool(name, args) {
           output: view && view.output ? view.output : '',
           waiting: view && view.waiting ? view.waiting : undefined,
           action: waitingNotice(view),
-        },
-        null,
-        2,
-      ),
+        }),
     )
   }
 
@@ -483,73 +289,14 @@ async function handleRequest(method, params) {
       return {
         protocolVersion: (params && params.protocolVersion) || '2024-11-05',
         capabilities: { tools: {} },
-        serverInfo: { name: 'dsh-mcp-relay', version: '0.6.0' },
+        serverInfo: { name: 'dsh-mcp-relay', version: '0.6.1' },
         // Injected into the client's context at handshake time, so the caller
         // learns the delegation model and the waiting contract without any
         // manual setup on the user's side.
-        instructions: [
-          'DSH Agent Control — drive DSH agents inside a running DeepSeek Harness instance.',
-          'Treat a DSH session as a subagent you can delegate to: it keeps its own context across',
-          'calls, works in the workspace you name, and returns a final answer.',
-          '',
-          '- dsh_list_sessions: find a sessionId to continue, or see what DSH is doing.',
-          '- dsh_models: list the provider/model ids this instance can route, with reasoning efforts.',
-          '- dsh_delegate: create a session in a workspace (or continue one via sessionId), send an',
-          '  instruction, and block until the turn finishes, returning the final output.',
-          '- dsh_answer: answer a question DSH asked, so its agent can resume.',
-          '- dsh_approval: choose how a session resolves FUTURE approval requests.',
-          '- dsh_cancel: cancel the active turn — the way out of a blocked approval.',
-          '- dsh_poll: check a session that is still running or was left waiting.',
-          '',
-          'Workflow: dsh_delegate({ workspace, instruction }). Omit sessionId to start a new DSH',
-          'agent; keep the returned sessionId and pass it back to continue the SAME agent (it',
-          'remembers prior work). Then read status:',
-          '  completed = output is the final answer.',
-          '  timeout   = still working; call dsh_poll({ sessionId, baselineSeq }).',
-          '  waiting   = blocked on a human. waiting.kind says which:',
-          '    "user-question" + intercepted:true -> answer it with dsh_answer({ sessionId, answers })',
-          '        using the ids in waiting.detail. If intercepted is false the question is sitting in',
-          '        the DSH GUI instead and only a person there can answer it.',
-          '    "approval" -> an operation needs a decision before DSH will run it, and this one is',
-          '        already pending: only a person in the DSH GUI can approve it, or dsh_cancel',
-          '        abandons the turn. waiting.detail carries the tool, the callId and the reason',
-          '        DSH gave. dsh_approval({ sessionId, mode }) only changes FUTURE approvals:',
-          '        "deny" rejects them at once, "gui" leaves them to the GUI.',
-          '',
-          'Choosing a model: a session runs on this instance\'s default model unless you say otherwise.',
-          'Call dsh_models for the ids it can route, then pass model (plus provider and reasoningEffort',
-          'when you want to pin them) to dsh_delegate; it applies to that turn. The choice is also saved',
-          'as the instance default for later sessions, exactly as the DSH model picker behaves, so pick',
-          'deliberately and say so when you do. Omit model to leave the session on what it already uses.',
-          '',
-          'Rules: reuse a sessionId to continue the SAME line of work — a new session loses that context —',
-          'but never reuse it for a different task. Pass an absolute path as workspace when creating a',
-          'session. Resolve a waiting state yourself',
-          '(answer the question, decide the approval) unless it genuinely needs a human. Do not poll',
-          'in a short-timeout loop: dsh_delegate already blocks until the turn ends. A tool call that',
-          'is merely still running is NOT a wait — the session stays "running" and reports a',
-          'pendingTool field. DSH agents have their own sandbox policy and cannot write outside',
-          'their workspace. Unanswered questions fall back to the DSH GUI after about three minutes.',
-          '',
-          'House rules for this deployment:',
-          '- One task per session: start a new session for each new task, and a fresh one once the context',
-          '  has grown long. Do not pile unrelated work into an old session.',
-          '- Always pass an absolute workspace path when creating a session.',
-          '- Default model: DeepSeek 4.1 Flash with a vision plugin, so it can read images — but the results',
-          '  can be inaccurate. Give it only simple image-reading tasks. A different model is usable only',
-          '  when dsh_models lists it; check before promising one.',
-          '- Never delegate visual design (drawing, web page layout, application UI, art): the model cannot',
-          '  do it. For front-end work, supply a detailed written spec or a visual mockup first.',
-          '- Do not check progress often; look in only when the user asks you to go faster.',
-          '- Use these tools only when the user asks. If, after analysing the work, you think part of it suits',
-          '  DSH, propose that and wait for agreement — do not start a delegation on your own initiative.',
-          '- The user normally sets the workspace up in advance and names it, usually the same workspace you',
-          '  (Codex) are already working in. If no workspace was given, ask whether to use your own workspace',
-          '  before creating a session — do not assume it.',
-        ].join('\n'),
+        instructions: SURFACE.instructions,
       }
     case 'tools/list':
-      return { tools: TOOLS }
+      return { tools: SURFACE.tools }
     case 'tools/call': {
       const name = params && params.name
       const args = (params && params.arguments) || {}
