@@ -86,7 +86,7 @@ Verify it independently:
 
 ```bash
 curl -s http://127.0.0.1:3080/dsh-relay/ping
-# {"ok":true,"data":{"relay":"dsh-mcp-relay","version":"0.6.1","tokenRequired":false}}
+# {"ok":true,"data":{"relay":"dsh-mcp-relay","version":"0.6.2","tokenRequired":false}}
 ```
 
 If your instance listens on a port other than 3080, use that port here and set `DSH_RELAY_URL` for the MCP
@@ -133,6 +133,7 @@ Environment variables:
 | `DSH_RELAY_TOKEN` | *(unset)* | Sent as `x-dsh-relay-token`; must match the plugin's value. |
 | `DSH_RELAY_TIMEOUT_MS` | `600000` | Default wait for one delegated turn. |
 | `DSH_RELAY_POLL_MS` | `2000` | Progress poll interval. |
+| `DSH_RELAY_CALL_TIMEOUT_MS` | `30000` | Per-request cap for relay calls; a hung relay fails the call instead of hanging the turn. |
 | `DSH_RELAY_SURFACE` | `lean` | Tool surface to serve. `full` serves the frozen 0.6.0 surface, for A/B measurement only. |
 
 ## Tools

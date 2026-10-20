@@ -1,6 +1,6 @@
 {
   "name": "dsh-mcp-relay",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "Expose a running DeepSeek Harness instance over MCP, so an external agent can list, delegate to, and answer questions in that instance's own sessions.",
   "type": "module",
   "main": "lib/index.js",
@@ -15,6 +15,7 @@
   "files": [
     "lib/index.js",
     "bin/dsh-mcp-relay.mjs",
+    "bin/relay-client.mjs",
     "bin/surface.mjs",
     "bin/surface.full.mjs",
     "bin/dsh-bench.mjs",
@@ -29,7 +30,7 @@
     }
   },
   "scripts": {
-    "test": "node test/model-selection.test.mjs"
+    "test": "node test/model-selection.test.mjs && node test/waiting-takeover.test.mjs && node test/relay-client.test.mjs"
   },
   "keywords": [
     "dsh",

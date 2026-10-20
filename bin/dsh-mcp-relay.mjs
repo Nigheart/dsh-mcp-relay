@@ -18,11 +18,13 @@
 import { createInterface } from 'node:readline'
 
 import { buildSurface } from './surface.mjs'
+import { createRelayClient } from './relay-client.mjs'
 
 const RELAY = process.env.DSH_RELAY_URL || 'http://127.0.0.1:3080/dsh-relay'
 const RELAY_TOKEN = process.env.DSH_RELAY_TOKEN || ''
 const DEFAULT_TIMEOUT_MS = Number(process.env.DSH_RELAY_TIMEOUT_MS || 600000)
 const POLL_INTERVAL_MS = Number(process.env.DSH_RELAY_POLL_MS || 2000)
+const RELAY_CALL_TIMEOUT_MS = Number(process.env.DSH_RELAY_CALL_TIMEOUT_MS || 30000)
 
 // Everything the client pays for on every request: the handshake instructions
 // and the tool schemas. DSH_RELAY_SURFACE=full serves the frozen 0.6.0 surface
@@ -35,61 +37,12 @@ const SURFACE = buildSurface({
 const log = (...parts) => process.stderr.write(`[dsh-mcp-relay] ${parts.join(' ')}\n`)
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
-async function callRelay(path, options = {}) {
-  const init = { method: options.method || 'GET', headers: {} }
-  if (RELAY_TOKEN) init.headers['x-dsh-relay-token'] = RELAY_TOKEN
-  if (options.body !== undefined) {
-    init.headers['Content-Type'] = 'application/json; charset=utf-8'
-    init.body = JSON.stringify(options.body)
-  }
-  let response
-  try {
-    response = await fetch(RELAY + path, init)
-  } catch (error) {
-    // A bare "fetch failed" tells the operator nothing. Name the address and the
-    // two things that are almost always wrong: DSH is not running, or this shim
-    // is pointed at a different port than the Web profile listens on.
-    const reason = String(error && error.message ? error.message : error)
-    throw new Error(
-      `cannot reach the DSH relay at ${RELAY} (${reason}). Check that DSH is running, and that ` +
-        'DSH_RELAY_URL matches the port its Web profile listens on — DSH itself defaults to 3080, ' +
-        'but a profile may set another port in its cordis.patch.yml.',
-    )
-  }
-  const text = await response.text()
-  let payload
-  try {
-    payload = JSON.parse(text)
-  } catch {
-    throw new Error(`relay returned non-JSON (HTTP ${response.status}): ${text.slice(0, 300)}`)
-  }
-  if (payload && payload.ok === false) throw new Error(payload.error || 'relay reported an error')
-  return payload && payload.ok === true ? payload.data : payload
-}
-
-const pollOnce = (sessionId) => callRelay(`/poll?sessionId=${encodeURIComponent(sessionId)}`)
-
-/**
- * Wait for the turn started after `baselineSeq`.
- *
- * Returns as soon as the turn completed or the session is blocked on a human
- * (`status === 'waiting'`). The second case must not consume the timeout,
- * because no amount of waiting resolves it.
- */
-async function waitForSettle(sessionId, baselineSeq, timeoutMs) {
-  const deadline = Date.now() + timeoutMs
-  let view = await pollOnce(sessionId)
-
-  while (Date.now() < deadline) {
-    if (view && view.status === 'waiting') return { outcome: 'waiting', view }
-    if (view && view.running === false && Number(view.lastSeq || 0) > baselineSeq) {
-      return { outcome: 'completed', view }
-    }
-    await sleep(POLL_INTERVAL_MS)
-    view = await pollOnce(sessionId)
-  }
-  return { outcome: 'timeout', view }
-}
+const relay = createRelayClient({
+  url: RELAY,
+  token: RELAY_TOKEN,
+  callTimeoutMs: RELAY_CALL_TIMEOUT_MS,
+  pollIntervalMs: POLL_INTERVAL_MS,
+})
 
 function summarizeView(view) {
   if (!view) return {}
@@ -145,17 +98,17 @@ function textBlock(text) {
 async function callTool(name, args) {
   if (name === 'dsh_list_sessions') {
     const query = args.workspace ? `?cwd=${encodeURIComponent(args.workspace)}` : ''
-    const data = await callRelay(`/list${query}`)
+    const data = await relay.call(`/list${query}`)
     return textBlock(JSON.stringify(data))
   }
 
   if (name === 'dsh_models') {
-    const data = await callRelay('/models')
+    const data = await relay.call('/models')
     return textBlock(JSON.stringify(data))
   }
 
   if (name === 'dsh_delegate') {
-    const accepted = await callRelay('/delegate', {
+    const accepted = await relay.call('/delegate', {
       method: 'POST',
       body: {
         instruction: args.instruction,
@@ -188,8 +141,14 @@ async function callTool(name, args) {
     }
 
     const timeoutMs = Number(args.timeoutMs || DEFAULT_TIMEOUT_MS)
-    const { outcome, view } = await waitForSettle(accepted.sessionId, baselineSeq, timeoutMs)
-    const output = view && view.output ? view.output : ''
+    const { outcome, view } = await relay.waitForSettle(accepted.sessionId, baselineSeq, timeoutMs)
+    // Only hand back output this turn produced. lastSeq can advance on unrelated
+    // events, and the session's last assistant message may predate the
+    // delegation, so the text has to be checked against the cursor too. An older
+    // relay that reports no outputSeq keeps the previous behaviour.
+    const outputSeq = view && view.outputSeq
+    const freshOutput = outputSeq == null ? true : Number(outputSeq) > baselineSeq
+    const output = freshOutput && view && view.output ? view.output : ''
 
     return textBlock(
       JSON.stringify(
@@ -218,7 +177,7 @@ async function callTool(name, args) {
   }
 
   if (name === 'dsh_answer') {
-    const result = await callRelay('/answer', {
+    const result = await relay.call('/answer', {
       method: 'POST',
       body: { sessionId: args.sessionId, answers: args.answers },
     })
@@ -233,7 +192,7 @@ async function callTool(name, args) {
   }
 
   if (name === 'dsh_approval') {
-    const result = await callRelay('/approval', {
+    const result = await relay.call('/approval', {
       method: 'POST',
       body: { sessionId: args.sessionId, mode: args.mode },
     })
@@ -241,7 +200,7 @@ async function callTool(name, args) {
   }
 
   if (name === 'dsh_cancel') {
-    const result = await callRelay('/cancel', {
+    const result = await relay.call('/cancel', {
       method: 'POST',
       body: { sessionId: args.sessionId },
     })
@@ -253,8 +212,8 @@ async function callTool(name, args) {
     const timeoutMs = Number(args.timeoutMs || 0)
     const { outcome, view } =
       timeoutMs > 0
-        ? await waitForSettle(args.sessionId, baselineSeq, timeoutMs)
-        : { outcome: null, view: await pollOnce(args.sessionId) }
+        ? await relay.waitForSettle(args.sessionId, baselineSeq, timeoutMs)
+        : { outcome: null, view: await relay.pollOnce(args.sessionId) }
 
     const status =
       outcome !== null ? outcome : view && view.running ? view.status || 'running' : 'idle'
@@ -289,7 +248,7 @@ async function handleRequest(method, params) {
       return {
         protocolVersion: (params && params.protocolVersion) || '2024-11-05',
         capabilities: { tools: {} },
-        serverInfo: { name: 'dsh-mcp-relay', version: '0.6.1' },
+        serverInfo: { name: 'dsh-mcp-relay', version: '0.6.2' },
         // Injected into the client's context at handshake time, so the caller
         // learns the delegation model and the waiting contract without any
         // manual setup on the user's side.

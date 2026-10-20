@@ -82,7 +82,7 @@ dsh plugin --profile web add github:Nigheart/dsh-mcp-relay
 
 ```bash
 curl -s http://127.0.0.1:3080/dsh-relay/ping
-# {"ok":true,"data":{"relay":"dsh-mcp-relay","version":"0.6.1","tokenRequired":false}}
+# {"ok":true,"data":{"relay":"dsh-mcp-relay","version":"0.6.2","tokenRequired":false}}
 ```
 
 如果你的实例监听的不是 3080，请把这里和下面的 `DSH_RELAY_URL` 一起改成实际端口。
@@ -128,6 +128,7 @@ server 会在 MCP 握手时（`initialize.instructions`）下发自己的用法�
 | `DSH_RELAY_TOKEN` | *未设置* | 作为 `x-dsh-relay-token` 发送，需与插件侧一致。 |
 | `DSH_RELAY_TIMEOUT_MS` | `600000` | 单次委派轮次的默认等待上限。 |
 | `DSH_RELAY_POLL_MS` | `2000` | 进度轮询间隔。 |
+| `DSH_RELAY_CALL_TIMEOUT_MS` | `30000` | 单次中继请求的上限；中继卡住时让调用失败，而不是吊住整轮。 |
 | `DSH_RELAY_SURFACE` | `lean` | 工具面版本。`full` 为冻结的 0.6.0 面，仅供 A/B 测量。 |
 
 ## 工具
