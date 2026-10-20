@@ -141,8 +141,8 @@ export function leanTools({ timeoutMs = 600000 } = {}) {
       name: 'dsh_poll',
       description:
         'Collect a result, answer a waiting state, or recover from an error — not a progress tool. ' +
-        'Do not query repeatedly while nothing needs you; query only when the user asks. Prefer ' +
-        'one long timeoutMs over a short loop.',
+        'Do not query repeatedly while nothing needs you; query progress only when the user asks. ' +
+        'Prefer one long timeoutMs over a short loop.',
       inputSchema: {
         type: 'object',
         properties: {

@@ -100,7 +100,7 @@ Verify it independently:
 
 ```bash
 curl -s http://127.0.0.1:3080/dsh-relay/ping
-# {"ok":true,"data":{"relay":"dsh-mcp-relay","version":"0.6.3","tokenRequired":false}}
+# {"ok":true,"data":{"relay":"dsh-mcp-relay","version":"0.6.4","tokenRequired":false}}
 ```
 
 If your instance listens on a port other than 3080, use that port here and set `DSH_RELAY_URL` for the MCP

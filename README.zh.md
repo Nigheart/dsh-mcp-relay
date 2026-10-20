@@ -96,7 +96,7 @@ dsh plugin --profile web add github:Nigheart/dsh-mcp-relay
 
 ```bash
 curl -s http://127.0.0.1:3080/dsh-relay/ping
-# {"ok":true,"data":{"relay":"dsh-mcp-relay","version":"0.6.3","tokenRequired":false}}
+# {"ok":true,"data":{"relay":"dsh-mcp-relay","version":"0.6.4","tokenRequired":false}}
 ```
 
 如果你的实例监听的不是 3080，请把这里和下面的 `DSH_RELAY_URL` 一起改成实际端口。

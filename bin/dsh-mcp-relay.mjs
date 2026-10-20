@@ -248,7 +248,7 @@ async function handleRequest(method, params) {
       return {
         protocolVersion: (params && params.protocolVersion) || '2024-11-05',
         capabilities: { tools: {} },
-        serverInfo: { name: 'dsh-mcp-relay', version: '0.6.3' },
+        serverInfo: { name: 'dsh-mcp-relay', version: '0.6.4' },
         // Injected into the client's context at handshake time, so the caller
         // learns the delegation model and the waiting contract without any
         // manual setup on the user's side.
